@@ -74,26 +74,6 @@
             background-color: #4b5563;
         }
 
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            background-color: #f9fafb;
-            border-radius: 0.5rem;
-            overflow: hidden;
-        }
-
-        th,
-        td {
-            padding: 0.75rem;
-            text-align: left;
-            border-bottom: 1px solid #e5e7eb;
-        }
-
-        th {
-            background-color: #d1d5db;
-            font-weight: 600;
-        }
-
         .modal {
             position: fixed;
             top: 0;
@@ -115,6 +95,25 @@
             max-width: 500px;
             width: 100%;
         }
+
+        .spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            border-left-color: #2563eb;
+            animation: spin 1s ease infinite;
+        }
+
+        @keyframes spin {
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
+        }
     </style>
     <script type="module">
         // Questo file è progettato per funzionare direttamente in un browser web moderno.
@@ -123,7 +122,7 @@
         // venga eseguito nell'ambiente sbagliato. Apri semplicemente l'HTML nel tuo browser.
 
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, getDoc, addDoc, setDoc, updateDoc, onSnapshot, collection, query, where, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { jsPDF } from "https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.es.min.js";
         import html2canvas from "https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js";
@@ -136,20 +135,28 @@
         // --- Firebase Initialization and Authentication ---
         let app, db, auth;
         let userId;
+        let isAuthReady = false;
 
         async function initFirebase() {
             try {
                 app = initializeApp(firebaseConfig);
                 db = getFirestore(app);
                 auth = getAuth(app);
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        document.getElementById('userIdDisplay').textContent = `User ID: ${userId}`;
+                        isAuthReady = true;
+                        startApp();
+                    } else {
+                        // Sign in anonymously if no token is available
+                        await signInAnonymously(auth);
+                    }
+                });
+
                 if (initialAuthToken) {
                     await signInWithCustomToken(auth, initialAuthToken);
-                } else {
-                    await signInAnonymously(auth);
                 }
-                userId = auth.currentUser.uid;
-                document.getElementById('userIdDisplay').textContent = `User ID: ${userId}`;
-                startApp();
             } catch (error) {
                 console.error("Firebase initialization failed:", error);
                 document.body.innerHTML = `<div class="container text-center text-red-600">
@@ -167,7 +174,8 @@
         // --- DOM Elements ---
         const startSessionScreen = document.getElementById('startSessionScreen');
         const sessionScreen = document.getElementById('sessionScreen');
-        const endSessionModal = document.getElementById('endSessionModal');
+        const existingSessionsList = document.getElementById('existingSessionsList');
+        const joinSessionForm = document.getElementById('joinSessionForm');
         const newSessionBtn = document.getElementById('newSessionBtn');
         const startSessionForm = document.getElementById('startSessionForm');
         const playersList = document.getElementById('playersList');
@@ -176,9 +184,26 @@
         const exportCsvBtn = document.getElementById('exportCsvBtn');
         const exportPdfBtn = document.getElementById('exportPdfBtn');
         const playerSelect = document.getElementById('playerSelect');
+        const sessionCodeDisplay = document.getElementById('sessionCodeDisplay');
+        const errorMessageModal = document.getElementById('errorMessageModal');
+        const errorMessageText = document.getElementById('errorMessageText');
+        const closeErrorModalBtn = document.getElementById('closeErrorModalBtn');
+        const myPlayerNameInput = document.getElementById('myPlayerName');
 
         // --- Functions ---
+        function showErrorMessage(message) {
+            errorMessageText.textContent = message;
+            errorMessageModal.style.display = 'flex';
+        }
+
+        closeErrorModalBtn.addEventListener('click', () => {
+            errorMessageModal.style.display = 'none';
+        });
+
         function startApp() {
+            startSessionScreen.classList.remove('hidden');
+            sessionScreen.classList.add('hidden');
+
             newSessionBtn.addEventListener('click', () => {
                 startSessionScreen.classList.remove('hidden');
                 sessionScreen.classList.add('hidden');
@@ -186,49 +211,105 @@
 
             startSessionForm.addEventListener('submit', handleStartSession);
             recordShotForm.addEventListener('submit', handleRecordShot);
+            joinSessionForm.addEventListener('submit', handleJoinSession);
             exportCsvBtn.addEventListener('click', exportToCsv);
             exportPdfBtn.addEventListener('click', exportToPdf);
 
-            loadSavedSessions();
+            setupSessionListener();
         }
 
-        async function loadSavedSessions() {
+        function setupSessionListener() {
             const sessionsRef = collection(db, 'artifacts', appId, 'public', 'data', 'bocce-sessions');
-            const q = query(sessionsRef, where("players", "array-contains", { "id": userId }));
-            const querySnapshot = await getDocs(q);
-            // This is a placeholder for loading logic, actual implementation requires more UI
+            const q = query(sessionsRef, where("playerIds", "array-contains", userId));
+            onSnapshot(q, (snapshot) => {
+                existingSessionsList.innerHTML = '';
+                snapshot.forEach((doc) => {
+                    const session = doc.data();
+                    const sessionItem = document.createElement('div');
+                    sessionItem.className = 'card cursor-pointer hover:bg-gray-200 transition-colors';
+                    sessionItem.innerHTML = `<h3 class="font-semibold">Sessione del ${new Date(session.date).toLocaleDateString()}</h3>
+                                             <p class="text-sm text-gray-600">Tipo: ${session.type}</p>
+                                             <p class="text-sm text-gray-600">ID: ${doc.id}</p>`;
+                    sessionItem.onclick = () => {
+                        joinSession(doc.id);
+                    };
+                    existingSessionsList.appendChild(sessionItem);
+                });
+            }, (error) => {
+                console.error("Error listening to sessions:", error);
+            });
         }
 
         async function handleStartSession(event) {
             event.preventDefault();
             const sessionType = startSessionForm.sessionType.value;
             const playerNames = startSessionForm.playerNames.value.split(',').map(name => name.trim()).filter(name => name.length > 0);
+            const myPlayerName = myPlayerNameInput.value.trim();
 
-            if (playerNames.length === 0) {
-                console.error("Player names cannot be empty.");
+            if (myPlayerName.length === 0) {
+                showErrorMessage("Per favore, inserisci il tuo nome.");
                 return;
             }
 
-            players = playerNames.map((name, index) => ({ id: crypto.randomUUID(), name, stats: {} }));
-            players.push({ id: userId, name: "Me", stats: {} }); // Add the current user
+            // Create player objects, ensuring the current user is part of the session
+            const newPlayers = playerNames.map(name => ({ id: crypto.randomUUID(), name, stats: {} }));
+            newPlayers.push({ id: userId, name: myPlayerName, stats: {} });
 
-            currentSession = {
-                id: crypto.randomUUID(),
+            const newSession = {
                 date: new Date().toISOString(),
                 type: sessionType,
-                players: players.map(p => ({ id: p.id, name: p.name })),
+                players: newPlayers.map(p => ({ id: p.id, name: p.name })),
+                playerIds: newPlayers.map(p => p.id), // Aggiunto per una query più efficiente
                 log: []
             };
 
-            const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'bocce-sessions', currentSession.id);
-            await setDoc(docRef, currentSession);
+            try {
+                const docRef = await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'bocce-sessions'), newSession);
+                joinSession(docRef.id);
+            } catch (error) {
+                console.error("Error creating new session:", error);
+                showErrorMessage("Si è verificato un errore durante la creazione della sessione.");
+            }
+        }
+
+        async function handleJoinSession(event) {
+            event.preventDefault();
+            const sessionId = joinSessionForm.sessionId.value.trim();
+            if (sessionId) {
+                joinSession(sessionId);
+            }
+        }
+
+        async function joinSession(sessionId) {
+            const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'bocce-sessions', sessionId);
+            const sessionDoc = await getDoc(docRef);
+
+            if (!sessionDoc.exists()) {
+                showErrorMessage("Sessione non trovata. Per favore, controlla l'ID.");
+                return;
+            }
 
             startSessionScreen.classList.add('hidden');
             sessionScreen.classList.remove('hidden');
-            updateSessionUI();
+
+            // Set up real-time listener for the current session
+            onSnapshot(docRef, (doc) => {
+                if (doc.exists()) {
+                    currentSession = doc.data();
+                    players = currentSession.players;
+                    sessionData = currentSession.log;
+                    updateSessionUI();
+                }
+            }, (error) => {
+                console.error("Error listening to session:", error);
+            });
         }
 
+
         function updateSessionUI() {
+            // Update session code display
+            sessionCodeDisplay.textContent = `Codice Sessione: ${currentSession.id}`;
+
             // Update players list
             playersList.innerHTML = '';
             playerSelect.innerHTML = '';
@@ -244,8 +325,9 @@
                 playerSelect.appendChild(option);
             });
 
-            // Update stats
+            // Update stats and play log
             updateStats();
+            updatePlayLog();
         }
 
         async function handleRecordShot(event) {
@@ -263,12 +345,10 @@
                 timestamp: new Date().toISOString()
             };
 
-            sessionData.push(shot);
             const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'bocce-sessions', currentSession.id);
-            await updateDoc(docRef, { log: sessionData });
-
-            updatePlayLog();
-            updateStats();
+            await updateDoc(docRef, {
+                log: [...currentSession.log, shot]
+            });
         }
 
         function updatePlayLog() {
@@ -277,19 +357,21 @@
                 const player = players.find(p => p.id === shot.playerId);
                 const logItem = document.createElement('div');
                 logItem.className = 'text-sm mb-1';
-                logItem.textContent = `${player.name} ha eseguito una giocata: ${shot.shotType}, risultato: ${shot.result}`;
+                logItem.textContent = `${player ? player.name : 'Giocatore Sconosciuto'} ha eseguito una giocata: ${shot.shotType}, risultato: ${shot.result}`;
                 playLog.appendChild(logItem);
             });
         }
 
         function updateStats() {
-            const stats = players.map(player => ({
-                name: player.name,
-                shots: sessionData.filter(shot => shot.playerId === player.id).length,
-                successes: sessionData.filter(shot => shot.playerId === player.id && shot.result === 'successo').length
-            }));
+            const stats = players.map(player => {
+                const playerShots = sessionData.filter(shot => shot.playerId === player.id);
+                return {
+                    name: player.name,
+                    shots: playerShots.length,
+                    successes: playerShots.filter(shot => shot.result === 'successo').length
+                };
+            });
 
-            // Display stats logic would go here
             console.log("Updated Stats:", stats);
         }
 
@@ -351,32 +433,57 @@
         <h1 class="text-3xl font-bold text-center mb-6">Bocce Performance Tracker</h1>
         <p class="text-center text-sm mb-4" id="userIdDisplay">User ID: N/A</p>
 
-        <!-- Start Session Screen -->
+        <!-- Schermata di avvio sessione -->
         <div id="startSessionScreen" class="">
             <div class="card">
-                <h2 class="text-xl font-semibold mb-4">Nuova Partita</h2>
-                <form id="startSessionForm" class="space-y-4">
-                    <div>
-                        <label for="sessionType" class="block text-sm font-medium mb-1">Tipo di Partita</label>
-                        <select id="sessionType" name="sessionType">
-                            <option value="1vs1">1 vs 1</option>
-                            <option value="2vs2">2 vs 2</option>
-                            <option value="3vs3">3 vs 3</option>
-                        </select>
-                    </div>
-                    <div>
-                        <label for="playerNames" class="block text-sm font-medium mb-1">Nomi Giocatori (separati da virgola)</label>
-                        <input type="text" id="playerNames" name="playerNames" placeholder="Es. Mario, Luigi, Giuseppe">
-                    </div>
-                    <button type="submit" class="btn-primary w-full">Avvia Sessione</button>
-                </form>
+                <h2 class="text-xl font-semibold mb-4">Inizia o unisciti a una partita</h2>
+                <div class="space-y-4">
+                    <form id="startSessionForm" class="space-y-4">
+                        <h3 class="font-medium">Inizia una nuova partita</h3>
+                        <div>
+                            <label for="myPlayerName" class="block text-sm font-medium mb-1">Il tuo nome</label>
+                            <input type="text" id="myPlayerName" name="myPlayerName" placeholder="Es. Giuseppe">
+                        </div>
+                        <div>
+                            <label for="sessionType" class="block text-sm font-medium mb-1">Tipo di Partita</label>
+                            <select id="sessionType" name="sessionType">
+                                <option value="1vs1">1 vs 1</option>
+                                <option value="2vs2">2 vs 2</option>
+                                <option value="3vs3">3 vs 3</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label for="playerNames" class="block text-sm font-medium mb-1">Nomi Giocatori (separati da virgola)</label>
+                            <input type="text" id="playerNames" name="playerNames" placeholder="Es. Mario, Luigi">
+                        </div>
+                        <button type="submit" class="btn-primary w-full">Avvia Nuova Sessione</button>
+                    </form>
+                    
+                    <div class="text-center my-4 font-semibold">O</div>
+
+                    <form id="joinSessionForm" class="space-y-4">
+                        <h3 class="font-medium">Unisciti a una partita esistente</h3>
+                        <div>
+                            <label for="sessionId" class="block text-sm font-medium mb-1">Codice Sessione</label>
+                            <input type="text" id="sessionId" name="sessionId" placeholder="Inserisci il codice della sessione">
+                        </div>
+                        <button type="submit" class="btn-secondary w-full">Entra nella Sessione</button>
+                    </form>
+                </div>
+            </div>
+            <div class="card mt-4">
+                <h2 class="text-xl font-semibold mb-4">Le tue sessioni recenti</h2>
+                <div id="existingSessionsList" class="space-y-2">
+                    <!-- Sessione esistenti will be injected here -->
+                </div>
             </div>
         </div>
 
-        <!-- Session Screen -->
+        <!-- Schermata di sessione -->
         <div id="sessionScreen" class="hidden">
+            <p id="sessionCodeDisplay" class="text-center text-sm mb-4 font-bold text-gray-700">Codice Sessione: N/A</p>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <!-- Player Stats -->
+                <!-- Statistiche dei giocatori -->
                 <div class="card">
                     <h2 class="text-xl font-semibold mb-4">Statistiche Giocatori</h2>
                     <div id="playersList" class="space-y-4">
@@ -384,7 +491,7 @@
                     </div>
                 </div>
 
-                <!-- Record Shot -->
+                <!-- Registra giocata -->
                 <div class="card">
                     <h2 class="text-xl font-semibold mb-4">Registra Giocata</h2>
                     <form id="recordShotForm" class="space-y-4">
@@ -421,7 +528,7 @@
                 </div>
             </div>
 
-            <!-- Play Log -->
+            <!-- Registro Giocate -->
             <div class="card">
                 <h2 class="text-xl font-semibold mb-4">Registro Giocate</h2>
                 <div id="playLog" class="text-gray-600">
@@ -429,25 +536,25 @@
                 </div>
             </div>
 
-            <!-- Export Buttons -->
+            <!-- Pulsanti di esportazione -->
             <div class="flex space-x-4 mt-4 justify-end">
                 <button id="exportCsvBtn" class="btn-secondary">Esporta CSV</button>
                 <button id="exportPdfBtn" class="btn-primary">Esporta PDF</button>
             </div>
-        </div>
-
-    </div>
-
-    <!-- Modal per la fine sessione, se necessario -->
-    <div id="endSessionModal" class="modal">
-        <div class="modal-content">
-            <h2 class="text-xl font-semibold mb-4">Sessione Terminata</h2>
-            <p>I dati sono stati salvati. Puoi esportare il report o iniziare una nuova partita.</p>
-            <div class="flex space-x-4 mt-4 justify-end">
-                <button id="modalCloseBtn" class="btn-secondary">Chiudi</button>
-                <button class="btn-primary">Nuova Partita</button>
+            <div class="flex justify-center mt-4">
+                 <button id="newSessionBtn" class="btn-secondary">Torna alla Home</button>
             </div>
         </div>
+
+        <!-- Modal per messaggi di errore -->
+        <div id="errorMessageModal" class="modal">
+            <div class="modal-content text-center">
+                <h3 class="text-xl font-bold mb-4 text-red-600">Errore</h3>
+                <p id="errorMessageText" class="mb-4"></p>
+                <button id="closeErrorModalBtn" class="btn-primary w-1/2 mx-auto">OK</button>
+            </div>
+        </div>
+
     </div>
 </body>
 
