@@ -117,22 +117,17 @@
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
     <script type="module">
-        // Questo file è progettato per funzionare direttamente in un browser web moderno.
-        // Non richiede un ambiente di compilazione come Node.js o Babel.
-        // Se si verifica un errore relativo a `@babel/runtime`, è probabile che il file
-        // venga eseguito nell'ambiente sbagliato. Apri semplicemente l'HTML nel tuo browser.
-
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, getDoc, addDoc, setDoc, updateDoc, onSnapshot, collection, query, where, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { jsPDF } from "https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.es.min.js";
-        
-        // Global variables provided by the environment
+
+        // Variabili globali fornite dall'ambiente
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
-        // --- Firebase Initialization and Authentication ---
+        // --- Inizializzazione e Autenticazione Firebase ---
         let app, db, auth;
         let userId;
         let isAuthReady = false;
@@ -149,7 +144,7 @@
                         isAuthReady = true;
                         startApp();
                     } else {
-                        // Sign in anonymously if no token is available
+                        // Accedi in modo anonimo se non è disponibile alcun token
                         await signInAnonymously(auth);
                     }
                 });
@@ -159,19 +154,16 @@
                 }
             } catch (error) {
                 console.error("Firebase initialization failed:", error);
-                document.body.innerHTML = `<div class="container text-center text-red-600">
-                    <h1>Errore di Connessione</h1>
-                    <p>Impossibile connettersi a Firebase. Controlla la tua configurazione e riprova.</p>
-                </div>`;
+                showErrorMessage("Errore di connessione: Impossibile connettersi al database. Riprova più tardi.");
             }
         }
 
-        // --- Global State ---
+        // --- Stato Globale ---
         let currentSession = null;
         let players = [];
         let sessionData = [];
 
-        // --- DOM Elements ---
+        // --- Elementi DOM ---
         const startSessionScreen = document.getElementById('startSessionScreen');
         const sessionScreen = document.getElementById('sessionScreen');
         const existingSessionsList = document.getElementById('existingSessionsList');
@@ -189,8 +181,9 @@
         const errorMessageText = document.getElementById('errorMessageText');
         const closeErrorModalBtn = document.getElementById('closeErrorModalBtn');
         const myPlayerNameInput = document.getElementById('myPlayerName');
+        const loadingOverlay = document.getElementById('loadingOverlay');
 
-        // --- Functions ---
+        // --- Funzioni ---
         function showErrorMessage(message) {
             errorMessageText.textContent = message;
             errorMessageModal.style.display = 'flex';
@@ -201,17 +194,18 @@
         });
 
         function startApp() {
+            // Nascondi l'overlay di caricamento una volta che l'app è pronta
+            loadingOverlay.classList.add('hidden');
             startSessionScreen.classList.remove('hidden');
-            sessionScreen.classList.add('hidden');
-
+            
+            // Imposta gli event listener per i moduli
+            startSessionForm.addEventListener('submit', handleStartSession);
+            recordShotForm.addEventListener('submit', handleRecordShot);
+            joinSessionForm.addEventListener('submit', handleJoinSession);
             newSessionBtn.addEventListener('click', () => {
                 startSessionScreen.classList.remove('hidden');
                 sessionScreen.classList.add('hidden');
             });
-
-            startSessionForm.addEventListener('submit', handleStartSession);
-            recordShotForm.addEventListener('submit', handleRecordShot);
-            joinSessionForm.addEventListener('submit', handleJoinSession);
             exportCsvBtn.addEventListener('click', exportToCsv);
             exportPdfBtn.addEventListener('click', exportToPdf);
 
@@ -219,6 +213,8 @@
         }
 
         function setupSessionListener() {
+            if (!isAuthReady) return;
+
             const sessionsRef = collection(db, 'artifacts', appId, 'public', 'data', 'bocce-sessions');
             const q = query(sessionsRef, where("playerIds", "array-contains", userId));
             onSnapshot(q, (snapshot) => {
@@ -236,12 +232,17 @@
                     existingSessionsList.appendChild(sessionItem);
                 });
             }, (error) => {
-                console.error("Error listening to sessions:", error);
+                console.error("Errore durante l'ascolto delle sessioni:", error);
             });
         }
 
         async function handleStartSession(event) {
             event.preventDefault();
+            if (!isAuthReady) {
+                showErrorMessage("L'applicazione non è ancora pronta. Riprova tra un momento.");
+                return;
+            }
+
             const sessionType = startSessionForm.sessionType.value;
             const playerNames = startSessionForm.playerNames.value.split(',').map(name => name.trim()).filter(name => name.length > 0);
             const myPlayerName = myPlayerNameInput.value.trim();
@@ -251,7 +252,7 @@
                 return;
             }
 
-            // Create player objects, ensuring the current user is part of the session
+            // Crea oggetti giocatore, assicurandoti che l'utente corrente faccia parte della sessione
             const newPlayers = playerNames.map(name => ({ id: crypto.randomUUID(), name, stats: {} }));
             newPlayers.push({ id: userId, name: myPlayerName, stats: {} });
 
@@ -259,7 +260,7 @@
                 date: new Date().toISOString(),
                 type: sessionType,
                 players: newPlayers.map(p => ({ id: p.id, name: p.name })),
-                playerIds: newPlayers.map(p => p.id), // Aggiunto per una query più efficiente
+                playerIds: newPlayers.map(p => p.id),
                 log: []
             };
 
@@ -267,16 +268,23 @@
                 const docRef = await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'bocce-sessions'), newSession);
                 joinSession(docRef.id);
             } catch (error) {
-                console.error("Error creating new session:", error);
-                showErrorMessage("Si è verificato un errore durante la creazione della sessione.");
+                console.error("Errore durante la creazione di una nuova sessione:", error);
+                showErrorMessage("Si è verificato un errore durante la creazione della sessione. Riprova.");
             }
         }
 
         async function handleJoinSession(event) {
             event.preventDefault();
+            if (!isAuthReady) {
+                showErrorMessage("L'applicazione non è ancora pronta. Riprova tra un momento.");
+                return;
+            }
+
             const sessionId = joinSessionForm.sessionId.value.trim();
             if (sessionId) {
                 joinSession(sessionId);
+            } else {
+                showErrorMessage("Per favore, inserisci un codice sessione valido.");
             }
         }
 
@@ -292,25 +300,32 @@
             startSessionScreen.classList.add('hidden');
             sessionScreen.classList.remove('hidden');
 
-            // Set up real-time listener for the current session
+            // Imposta il listener in tempo reale per la sessione corrente
             onSnapshot(docRef, (doc) => {
                 if (doc.exists()) {
                     currentSession = doc.data();
+                    currentSession.id = doc.id; // Salva l'ID del documento
                     players = currentSession.players;
                     sessionData = currentSession.log;
                     updateSessionUI();
+                } else {
+                    // La sessione è stata eliminata o non esiste più
+                    showErrorMessage("Questa sessione non è più disponibile.");
+                    startSessionScreen.classList.remove('hidden');
+                    sessionScreen.classList.add('hidden');
                 }
             }, (error) => {
-                console.error("Error listening to session:", error);
+                console.error("Errore durante l'ascolto della sessione:", error);
+                showErrorMessage("Si è verificato un errore di connessione. Riprova a unirti alla sessione.");
             });
         }
 
 
         function updateSessionUI() {
-            // Update session code display
+            // Aggiorna la visualizzazione del codice sessione
             sessionCodeDisplay.textContent = `Codice Sessione: ${currentSession.id}`;
 
-            // Update players list
+            // Aggiorna l'elenco dei giocatori
             playersList.innerHTML = '';
             playerSelect.innerHTML = '';
             players.forEach(player => {
@@ -325,7 +340,7 @@
                 playerSelect.appendChild(option);
             });
 
-            // Update stats and play log
+            // Aggiorna le statistiche e il registro giocate
             updateStats();
             updatePlayLog();
         }
@@ -371,8 +386,6 @@
                     successes: playerShots.filter(shot => shot.result === 'successo').length
                 };
             });
-
-            console.log("Updated Stats:", stats);
         }
 
         function exportToCsv() {
@@ -429,12 +442,16 @@
 
 <body>
 
+    <div id="loadingOverlay" class="fixed inset-0 bg-white bg-opacity-75 z-50 flex items-center justify-center">
+        <div class="spinner"></div>
+    </div>
+
     <div class="container">
         <h1 class="text-3xl font-bold text-center mb-6">Bocce Performance Tracker</h1>
         <p class="text-center text-sm mb-4" id="userIdDisplay">User ID: N/A</p>
 
         <!-- Schermata di avvio sessione -->
-        <div id="startSessionScreen" class="">
+        <div id="startSessionScreen" class="hidden">
             <div class="card">
                 <h2 class="text-xl font-semibold mb-4">Inizia o unisciti a una partita</h2>
                 <div class="space-y-4">
@@ -554,8 +571,7 @@
                 <button id="closeErrorModalBtn" class="btn-primary w-1/2 mx-auto">OK</button>
             </div>
         </div>
-
     </div>
 </body>
-
 </html>
+
