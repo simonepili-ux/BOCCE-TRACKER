@@ -122,7 +122,7 @@
 
         // --- Variabili globali ---
         let supabaseClient = null;
-        let userId = crypto.randomUUID(); // Usiamo un ID anonimo per tracciare l'utente
+        let userId; // L'ID utente ora sarà persistente
         let currentSession = null;
         let players = [];
         let sessionData = [];
@@ -151,6 +151,7 @@
         const mainAppContainer = document.getElementById('mainAppContainer');
         const supabaseUrlInput = document.getElementById('supabaseUrl');
         const supabaseAnonKeyInput = document.getElementById('supabaseAnonKey');
+        const userIdDisplay = document.getElementById('userIdDisplay');
 
 
         // --- Funzioni di utilità ---
@@ -164,12 +165,24 @@
         });
 
         // --- Inizializzazione Supabase ---
-        function initSupabase(url, anonKey) {
+        async function initSupabase(url, anonKey) {
             try {
                 supabaseClient = supabase.createClient(url, anonKey);
+                // Eseguiamo una query di prova per assicurarci che la connessione sia valida
+                const { error } = await supabaseClient
+                    .from('bocce_sessions')
+                    .select('id')
+                    .limit(1);
+
+                if (error) {
+                    throw new Error("Credenziali non valide o errore di connessione.");
+                }
+
+                // Se la connessione ha successo, avvia l'app
                 startApp();
             } catch (error) {
                 console.error("Supabase initialization failed:", error);
+                loadingOverlay.classList.add('hidden'); // Nascondi il caricamento in caso di errore
                 showErrorMessage("Errore di connessione: Credenziali Supabase non valide. Per favore, controlla i tuoi dati.");
             }
         }
@@ -191,15 +204,14 @@
             exportCsvBtn.addEventListener('click', exportToCsv);
             exportPdfBtn.addEventListener('click', exportToPdf);
 
+            // Aggiungi un listener per le sessioni
             setupSessionListener();
         }
 
         function setupSessionListener() {
             if (!supabaseClient) return;
 
-            // Supabase non ha una query diretta per `array-contains`,
-            // quindi carichiamo tutte le sessioni e filtriamo.
-            // Questo potrebbe non essere efficiente per un'app su larga scala.
+            // Carica tutte le sessioni e filtra per l'utente corrente
             supabaseClient
                 .from('bocce_sessions')
                 .select('*')
@@ -210,6 +222,7 @@
                         return;
                     }
                     existingSessionsList.innerHTML = '';
+                    // Utilizza l'ID utente persistente
                     const mySessions = data.filter(session => session.player_ids.includes(userId));
                     mySessions.forEach(session => {
                         const sessionItem = document.createElement('div');
@@ -254,6 +267,7 @@
             }
 
             const newPlayers = playerNames.map(name => ({ id: crypto.randomUUID(), name, stats: {} }));
+            // Assicurati che il tuo giocatore venga aggiunto con l'ID utente persistente
             newPlayers.push({ id: userId, name: myPlayerName, stats: {} });
 
             const newSessionData = {
@@ -287,7 +301,7 @@
             if (sessionId) {
                 joinSession(sessionId);
             } else {
-                showErrorMessage("Per favor, inserisci un codice sessione valido.");
+                showErrorMessage("Per favore, inserisci un codice sessione valido.");
             }
         }
 
@@ -445,6 +459,14 @@
         // Mostra il setup screen al caricamento della pagina e pre-compila l'URL
         window.addEventListener('load', () => {
             loadingOverlay.classList.add('hidden');
+            // Gestione dell'ID utente persistente
+            userId = localStorage.getItem('bocce-userId');
+            if (!userId) {
+                userId = crypto.randomUUID();
+                localStorage.setItem('bocce-userId', userId);
+            }
+            userIdDisplay.textContent = `User ID: ${userId}`;
+            // Pre-compila le credenziali
             supabaseUrlInput.value = 'https://uvisjnahbbteoqlezvoh.supabase.co';
             supabaseAnonKeyInput.value = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV2aXNqbmFoYmJ0ZW9xbGV6dm9oIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTcxNjE1NTksImV4cCI6MjA3MjczNzU1OX0.qBe-lNcdwWGHbVygYND0jROMRL5iuAP7zcb1pBM0-hg';
         });
