@@ -149,6 +149,9 @@
         const setupScreen = document.getElementById('setupScreen');
         const setupForm = document.getElementById('setupForm');
         const mainAppContainer = document.getElementById('mainAppContainer');
+        const supabaseUrlInput = document.getElementById('supabaseUrl');
+        const supabaseAnonKeyInput = document.getElementById('supabaseAnonKey');
+
 
         // --- Funzioni di utilità ---
         function showErrorMessage(message) {
@@ -175,7 +178,7 @@
         function startApp() {
             loadingOverlay.classList.add('hidden');
             setupScreen.classList.add('hidden');
-            mainAppContainer.classList.remove('hidden'); // Fix: Rendi visibile il contenitore principale
+            mainAppContainer.classList.remove('hidden');
             startSessionScreen.classList.remove('hidden');
 
             startSessionForm.addEventListener('submit', handleStartSession);
@@ -439,9 +442,11 @@
             initSupabase(supabaseUrl, supabaseAnonKey);
         });
 
-        // Mostra il setup screen al caricamento della pagina
+        // Mostra il setup screen al caricamento della pagina e pre-compila l'URL
         window.addEventListener('load', () => {
             loadingOverlay.classList.add('hidden');
+            supabaseUrlInput.value = 'https://uvisjnahbbteoqlezvoh.supabase.co';
+            supabaseAnonKeyInput.value = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV2aXNqbmFoYmJ0ZW9xbGV6dm9oIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTcxNjE1NTksImV4cCI6MjA3MjczNzU1OX0.qBe-lNcdwWGHbVygYND0jROMRL5iuAP7zcb1pBM0-hg';
         });
 
     </script>
