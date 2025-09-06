@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="it">
 
 <head>
     <meta charset="UTF-8">
@@ -116,49 +116,13 @@
         }
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, getDoc, addDoc, setDoc, updateDoc, onSnapshot, collection, query, where, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { jsPDF } from "https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.es.min.js";
 
-        // Variabili globali fornite dall'ambiente
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-
-        // --- Inizializzazione e Autenticazione Firebase ---
-        let app, db, auth;
-        let userId;
-        let isAuthReady = false;
-
-        async function initFirebase() {
-            try {
-                app = initializeApp(firebaseConfig);
-                db = getFirestore(app);
-                auth = getAuth(app);
-                onAuthStateChanged(auth, async (user) => {
-                    if (user) {
-                        userId = user.uid;
-                        document.getElementById('userIdDisplay').textContent = `User ID: ${userId}`;
-                        isAuthReady = true;
-                        startApp();
-                    } else {
-                        // Accedi in modo anonimo se non è disponibile alcun token
-                        await signInAnonymously(auth);
-                    }
-                });
-
-                if (initialAuthToken) {
-                    await signInWithCustomToken(auth, initialAuthToken);
-                }
-            } catch (error) {
-                console.error("Firebase initialization failed:", error);
-                showErrorMessage("Errore di connessione: Impossibile connettersi al database. Riprova più tardi.");
-            }
-        }
-
-        // --- Stato Globale ---
+        // --- Variabili globali ---
+        let supabaseClient = null;
+        let userId = crypto.randomUUID(); // Usiamo un ID anonimo per tracciare l'utente
         let currentSession = null;
         let players = [];
         let sessionData = [];
@@ -182,8 +146,11 @@
         const closeErrorModalBtn = document.getElementById('closeErrorModalBtn');
         const myPlayerNameInput = document.getElementById('myPlayerName');
         const loadingOverlay = document.getElementById('loadingOverlay');
+        const setupScreen = document.getElementById('setupScreen');
+        const setupForm = document.getElementById('setupForm');
+        const mainAppContainer = document.getElementById('mainAppContainer');
 
-        // --- Funzioni ---
+        // --- Funzioni di utilità ---
         function showErrorMessage(message) {
             errorMessageText.textContent = message;
             errorMessageModal.style.display = 'flex';
@@ -193,12 +160,24 @@
             errorMessageModal.style.display = 'none';
         });
 
+        // --- Inizializzazione Supabase ---
+        function initSupabase(url, anonKey) {
+            try {
+                supabaseClient = supabase.createClient(url, anonKey);
+                startApp();
+            } catch (error) {
+                console.error("Supabase initialization failed:", error);
+                showErrorMessage("Errore di connessione: Credenziali Supabase non valide. Per favore, controlla i tuoi dati.");
+            }
+        }
+
+        // --- Logica dell'applicazione ---
         function startApp() {
-            // Nascondi l'overlay di caricamento una volta che l'app è pronta
             loadingOverlay.classList.add('hidden');
+            setupScreen.classList.add('hidden');
+            mainAppContainer.classList.remove('hidden'); // Fix: Rendi visibile il contenitore principale
             startSessionScreen.classList.remove('hidden');
-            
-            // Imposta gli event listener per i moduli
+
             startSessionForm.addEventListener('submit', handleStartSession);
             recordShotForm.addEventListener('submit', handleRecordShot);
             joinSessionForm.addEventListener('submit', handleJoinSession);
@@ -213,36 +192,55 @@
         }
 
         function setupSessionListener() {
-            if (!isAuthReady) return;
+            if (!supabaseClient) return;
 
-            const sessionsRef = collection(db, 'artifacts', appId, 'public', 'data', 'bocce-sessions');
-            const q = query(sessionsRef, where("playerIds", "array-contains", userId));
-            onSnapshot(q, (snapshot) => {
-                existingSessionsList.innerHTML = '';
-                snapshot.forEach((doc) => {
-                    const session = doc.data();
-                    const sessionItem = document.createElement('div');
-                    sessionItem.className = 'card cursor-pointer hover:bg-gray-200 transition-colors';
-                    sessionItem.innerHTML = `<h3 class="font-semibold">Sessione del ${new Date(session.date).toLocaleDateString()}</h3>
-                                             <p class="text-sm text-gray-600">Tipo: ${session.type}</p>
-                                             <p class="text-sm text-gray-600">ID: ${doc.id}</p>`;
-                    sessionItem.onclick = () => {
-                        joinSession(doc.id);
-                    };
-                    existingSessionsList.appendChild(sessionItem);
+            // Supabase non ha una query diretta per `array-contains`,
+            // quindi carichiamo tutte le sessioni e filtriamo.
+            // Questo potrebbe non essere efficiente per un'app su larga scala.
+            supabaseClient
+                .from('bocce_sessions')
+                .select('*')
+                .then(({ data, error }) => {
+                    if (error) {
+                        console.error("Error fetching sessions:", error);
+                        showErrorMessage("Errore nel recupero delle sessioni. Riprova più tardi.");
+                        return;
+                    }
+                    existingSessionsList.innerHTML = '';
+                    const mySessions = data.filter(session => session.player_ids.includes(userId));
+                    mySessions.forEach(session => {
+                        const sessionItem = document.createElement('div');
+                        sessionItem.className = 'card cursor-pointer hover:bg-gray-200 transition-colors';
+                        sessionItem.innerHTML = `<h3 class="font-semibold">Sessione del ${new Date(session.session_data.date).toLocaleDateString()}</h3>
+                                                 <p class="text-sm text-gray-600">Tipo: ${session.session_data.type}</p>
+                                                 <p class="text-sm text-gray-600">ID: ${session.id}</p>`;
+                        sessionItem.onclick = () => {
+                            joinSession(session.id);
+                        };
+                        existingSessionsList.appendChild(sessionItem);
+                    });
                 });
-            }, (error) => {
-                console.error("Errore durante l'ascolto delle sessioni:", error);
-            });
+
+            // Listener per i cambiamenti in tempo reale
+            supabaseClient
+                .channel('bocce-sessions-changes')
+                .on('postgres_changes', { event: '*', schema: 'public', table: 'bocce_sessions' }, payload => {
+                    console.log('Change received!', payload);
+                    // Ricarica le sessioni recenti per mantenere la UI aggiornata
+                    setupSessionListener();
+                    // Se la sessione cambiata è quella a cui l'utente è collegato, aggiorna la UI
+                    if (currentSession && payload.new && payload.new.id === currentSession.id) {
+                        currentSession = payload.new;
+                        players = currentSession.session_data.players;
+                        sessionData = currentSession.session_data.log;
+                        updateSessionUI();
+                    }
+                })
+                .subscribe();
         }
 
         async function handleStartSession(event) {
             event.preventDefault();
-            if (!isAuthReady) {
-                showErrorMessage("L'applicazione non è ancora pronta. Riprova tra un momento.");
-                return;
-            }
-
             const sessionType = startSessionForm.sessionType.value;
             const playerNames = startSessionForm.playerNames.value.split(',').map(name => name.trim()).filter(name => name.length > 0);
             const myPlayerName = myPlayerNameInput.value.trim();
@@ -252,80 +250,70 @@
                 return;
             }
 
-            // Crea oggetti giocatore, assicurandoti che l'utente corrente faccia parte della sessione
             const newPlayers = playerNames.map(name => ({ id: crypto.randomUUID(), name, stats: {} }));
             newPlayers.push({ id: userId, name: myPlayerName, stats: {} });
 
-            const newSession = {
+            const newSessionData = {
                 date: new Date().toISOString(),
                 type: sessionType,
                 players: newPlayers.map(p => ({ id: p.id, name: p.name })),
-                playerIds: newPlayers.map(p => p.id),
                 log: []
             };
 
-            try {
-                const docRef = await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'bocce-sessions'), newSession);
-                joinSession(docRef.id);
-            } catch (error) {
-                console.error("Errore durante la creazione di una nuova sessione:", error);
-                showErrorMessage("Si è verificato un errore durante la creazione della sessione. Riprova.");
+            const newSession = {
+                session_data: newSessionData,
+                player_ids: newPlayers.map(p => p.id)
+            };
+
+            const { data, error } = await supabaseClient
+                .from('bocce_sessions')
+                .insert([newSession])
+                .select();
+
+            if (error) {
+                console.error("Error creating new session:", error);
+                showErrorMessage("Si è verificato un errore durante la creazione della sessione.");
+            } else {
+                joinSession(data[0].id);
             }
         }
 
         async function handleJoinSession(event) {
             event.preventDefault();
-            if (!isAuthReady) {
-                showErrorMessage("L'applicazione non è ancora pronta. Riprova tra un momento.");
-                return;
-            }
-
             const sessionId = joinSessionForm.sessionId.value.trim();
             if (sessionId) {
                 joinSession(sessionId);
             } else {
-                showErrorMessage("Per favore, inserisci un codice sessione valido.");
+                showErrorMessage("Per favor, inserisci un codice sessione valido.");
             }
         }
 
         async function joinSession(sessionId) {
-            const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'bocce-sessions', sessionId);
-            const sessionDoc = await getDoc(docRef);
+            const { data, error } = await supabaseClient
+                .from('bocce_sessions')
+                .select('*')
+                .eq('id', sessionId)
+                .single();
 
-            if (!sessionDoc.exists()) {
+            if (error) {
+                console.error("Session not found:", error);
                 showErrorMessage("Sessione non trovata. Per favore, controlla l'ID.");
                 return;
             }
 
+            currentSession = data;
+            players = currentSession.session_data.players;
+            sessionData = currentSession.session_data.log;
+
             startSessionScreen.classList.add('hidden');
             sessionScreen.classList.remove('hidden');
-
-            // Imposta il listener in tempo reale per la sessione corrente
-            onSnapshot(docRef, (doc) => {
-                if (doc.exists()) {
-                    currentSession = doc.data();
-                    currentSession.id = doc.id; // Salva l'ID del documento
-                    players = currentSession.players;
-                    sessionData = currentSession.log;
-                    updateSessionUI();
-                } else {
-                    // La sessione è stata eliminata o non esiste più
-                    showErrorMessage("Questa sessione non è più disponibile.");
-                    startSessionScreen.classList.remove('hidden');
-                    sessionScreen.classList.add('hidden');
-                }
-            }, (error) => {
-                console.error("Errore durante l'ascolto della sessione:", error);
-                showErrorMessage("Si è verificato un errore di connessione. Riprova a unirti alla sessione.");
-            });
+            updateSessionUI();
         }
 
 
         function updateSessionUI() {
-            // Aggiorna la visualizzazione del codice sessione
             sessionCodeDisplay.textContent = `Codice Sessione: ${currentSession.id}`;
 
-            // Aggiorna l'elenco dei giocatori
             playersList.innerHTML = '';
             playerSelect.innerHTML = '';
             players.forEach(player => {
@@ -340,7 +328,6 @@
                 playerSelect.appendChild(option);
             });
 
-            // Aggiorna le statistiche e il registro giocate
             updateStats();
             updatePlayLog();
         }
@@ -360,10 +347,17 @@
                 timestamp: new Date().toISOString()
             };
 
-            const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'bocce-sessions', currentSession.id);
-            await updateDoc(docRef, {
-                log: [...currentSession.log, shot]
-            });
+            const newLog = [...currentSession.session_data.log, shot];
+
+            const { error } = await supabaseClient
+                .from('bocce_sessions')
+                .update({ session_data: { ...currentSession.session_data, log: newLog } })
+                .eq('id', currentSession.id);
+
+            if (error) {
+                console.error("Error updating session:", error);
+                showErrorMessage("Errore durante la registrazione della giocata. Riprova.");
+            }
         }
 
         function updatePlayLog() {
@@ -436,17 +430,47 @@
             });
         }
 
-        initFirebase();
+        // --- Gestione della schermata di setup ---
+        setupForm.addEventListener('submit', (event) => {
+            event.preventDefault();
+            loadingOverlay.classList.remove('hidden'); // Mostra il caricamento durante la connessione
+            const supabaseUrl = document.getElementById('supabaseUrl').value;
+            const supabaseAnonKey = document.getElementById('supabaseAnonKey').value;
+            initSupabase(supabaseUrl, supabaseAnonKey);
+        });
+
+        // Mostra il setup screen al caricamento della pagina
+        window.addEventListener('load', () => {
+            loadingOverlay.classList.add('hidden');
+        });
+
     </script>
 </head>
 
 <body>
 
-    <div id="loadingOverlay" class="fixed inset-0 bg-white bg-opacity-75 z-50 flex items-center justify-center">
+    <div id="loadingOverlay" class="fixed inset-0 bg-white bg-opacity-75 z-50 flex items-center justify-center hidden">
         <div class="spinner"></div>
     </div>
 
-    <div class="container">
+    <!-- Schermata di configurazione iniziale -->
+    <div id="setupScreen" class="container">
+        <h1 class="text-3xl font-bold text-center mb-6">Configurazione Supabase</h1>
+        <p class="text-center text-gray-600 mb-6">Per favore, inserisci le credenziali del tuo progetto Supabase per avviare l'app. Trovi le istruzioni nel file `guida_supabase.md`.</p>
+        <form id="setupForm" class="space-y-4">
+            <div>
+                <label for="supabaseUrl" class="block text-sm font-medium mb-1">URL del Progetto Supabase</label>
+                <input type="text" id="supabaseUrl" name="supabaseUrl" placeholder="Es. https://xyz.supabase.co">
+            </div>
+            <div>
+                <label for="supabaseAnonKey" class="block text-sm font-medium mb-1">Chiave `anon` pubblica</label>
+                <input type="text" id="supabaseAnonKey" name="supabaseAnonKey" placeholder="Es. eyJhbGciOiJIUzI1NiI...">
+            </div>
+            <button type="submit" class="btn-primary w-full">Connetti</button>
+        </form>
+    </div>
+
+    <div class="container hidden" id="mainAppContainer">
         <h1 class="text-3xl font-bold text-center mb-6">Bocce Performance Tracker</h1>
         <p class="text-center text-sm mb-4" id="userIdDisplay">User ID: N/A</p>
 
@@ -475,7 +499,7 @@
                         </div>
                         <button type="submit" class="btn-primary w-full">Avvia Nuova Sessione</button>
                     </form>
-                    
+
                     <div class="text-center my-4 font-semibold">O</div>
 
                     <form id="joinSessionForm" class="space-y-4">
@@ -559,19 +583,19 @@
                 <button id="exportPdfBtn" class="btn-primary">Esporta PDF</button>
             </div>
             <div class="flex justify-center mt-4">
-                 <button id="newSessionBtn" class="btn-secondary">Torna alla Home</button>
-            </div>
-        </div>
-
-        <!-- Modal per messaggi di errore -->
-        <div id="errorMessageModal" class="modal">
-            <div class="modal-content text-center">
-                <h3 class="text-xl font-bold mb-4 text-red-600">Errore</h3>
-                <p id="errorMessageText" class="mb-4"></p>
-                <button id="closeErrorModalBtn" class="btn-primary w-1/2 mx-auto">OK</button>
+                <button id="newSessionBtn" class="btn-secondary">Torna alla Home</button>
             </div>
         </div>
     </div>
-</body>
-</html>
 
+    <!-- Modal per messaggi di errore -->
+    <div id="errorMessageModal" class="modal">
+        <div class="modal-content text-center">
+            <h3 class="text-xl font-bold mb-4 text-red-600">Errore</h3>
+            <p id="errorMessageText" class="mb-4"></p>
+            <button id="closeErrorModalBtn" class="btn-primary w-1/2 mx-auto">OK</button>
+        </div>
+    </div>
+</body>
+
+</html>
